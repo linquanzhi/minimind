@@ -396,18 +396,32 @@ class MiniMindModel(nn.Module):
                 past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None,
                 use_cache: bool = False,
                 **kwargs):
-        batch_size, seq_length = input_ids.shape
-        if hasattr(past_key_values, 'layers'): past_key_values = None
+        
+        # 获取输入的批次大小和序列长度
+        if input_ids is not None:
+            batch_size, seq_length = input_ids.shape
+        else:
+            # 如果没有input_ids，可能是只传了embeds的情况，这里简化处理，假设必须有input_ids
+            raise ValueError("You have to specify input_ids")
+
+        # 处理past_key_values，用于推理时的KV Cache
+        if hasattr(past_key_values, 'layers'): 
+            past_key_values = None
         past_key_values = past_key_values or [None] * len(self.layers)
+        
+        # 计算当前序列的起始位置，用于位置编码
         start_pos = past_key_values[0][0].shape[1] if past_key_values[0] is not None else 0
 
+        # 获取输入的embedding并应用dropout
         hidden_states = self.dropout(self.embed_tokens(input_ids))
 
+        # 根据序列位置切片获取预计算的RoPE位置编码（cos和sin）
         position_embeddings = (
             self.freqs_cos[start_pos:start_pos + seq_length],
             self.freqs_sin[start_pos:start_pos + seq_length]
         )
 
+        # 逐层前向传播
         presents = []
         for layer_idx, (layer, past_key_value) in enumerate(zip(self.layers, past_key_values)):
             hidden_states, present = layer(
@@ -419,8 +433,10 @@ class MiniMindModel(nn.Module):
             )
             presents.append(present)
 
+        # 最后的归一化层
         hidden_states = self.norm(hidden_states)
 
+        # 如果使用了MoE（混合专家模型），计算辅助损失（load balancing loss）
         aux_loss = sum(
             layer.mlp.aux_loss
             for layer in self.layers
